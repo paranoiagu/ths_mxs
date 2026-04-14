@@ -97,6 +97,17 @@ def count_condition(condition: pd.Series, window: int) -> pd.Series:
     return numeric.rolling(window=window, min_periods=1).sum()
 
 
+def backset(condition: pd.Series, periods: int) -> pd.Series:
+    values = condition.fillna(False).astype(bool).to_numpy()
+    result = np.zeros(len(values), dtype=bool)
+    for idx, is_true in enumerate(values):
+        if not is_true:
+            continue
+        start = max(0, idx - periods + 1)
+        result[start : idx + 1] = True
+    return pd.Series(result, index=condition.index)
+
+
 def cross(series_a: pd.Series, series_b: pd.Series | float) -> pd.Series:
     if np.isscalar(series_b):
         series_b = pd.Series(series_b, index=series_a.index, dtype=float)
@@ -306,27 +317,43 @@ def normalize_daily_df(df: pd.DataFrame, required_columns: list[str], dedupe_sub
         .sort_values(dedupe_subset)
         .reset_index(drop=True)
     )
+import functools
+
+@functools.lru_cache(maxsize=1000)
+def _read_csv_cached_internal(file_path_str: str, required_columns: tuple, dedupe_subset: tuple) -> pd.DataFrame:
+    file_path = Path(file_path_str)
+    if not file_path.exists():
+        return pd.DataFrame(columns=list(required_columns))
+    df = pd.read_csv(file_path)
+    return normalize_daily_df(df, required_columns=list(required_columns), dedupe_subset=list(dedupe_subset))
 
 
 def read_csv_cache(file_path: Path, required_columns: list[str], dedupe_subset: list[str]) -> pd.DataFrame:
-    if not file_path.exists():
-        return pd.DataFrame(columns=required_columns)
-    df = pd.read_csv(file_path)
-    return normalize_daily_df(df, required_columns=required_columns, dedupe_subset=dedupe_subset)
+    return _read_csv_cached_internal(str(file_path), tuple(required_columns), tuple(dedupe_subset))
 
 
 def write_csv_cache(file_path: Path, df: pd.DataFrame, required_columns: list[str], dedupe_subset: list[str]) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
     normalized_df = normalize_daily_df(df, required_columns=required_columns, dedupe_subset=dedupe_subset)
     normalized_df.to_csv(file_path, index=False, encoding="utf-8-sig")
+    _read_csv_cached_internal.cache_clear()
 
+
+
+_ATTEMPTED_EMPTY_STOCK_DATES: set[str] = set()
 
 def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
     required_columns = ["ts_code", "trade_date", "open", "high", "low", "close", "vol"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_stock_day_cache_path(trade_date)
         if file_path.exists():
-            continue
+            if trade_date == end_date and trade_date not in _ATTEMPTED_EMPTY_STOCK_DATES:
+                df = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
+                if not df.empty:
+                    continue
+                _ATTEMPTED_EMPTY_STOCK_DATES.add(trade_date)
+            else:
+                continue
         df = api_call_with_retry(
             pro.daily,
             pro_api_instance=pro,
@@ -338,12 +365,20 @@ def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
         write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
 
 
+_ATTEMPTED_EMPTY_ADJ_DATES: set[str] = set()
+
 def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
     required_columns = ["ts_code", "trade_date", "adj_factor"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_adj_factor_day_cache_path(trade_date)
         if file_path.exists():
-            continue
+            if trade_date == end_date and trade_date not in _ATTEMPTED_EMPTY_ADJ_DATES:
+                df = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
+                if not df.empty:
+                    continue
+                _ATTEMPTED_EMPTY_ADJ_DATES.add(trade_date)
+            else:
+                continue
         df = pro.adj_factor(trade_date=trade_date)
         write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
 
@@ -570,7 +605,7 @@ def build_output_path(ts_code: str, output_csv: Optional[str]) -> Path:
     return (Path(__file__).resolve().parent / "data" / f"ths_indicator_{ts_code}.csv").resolve()
 
 
-def calculate_ths_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, float_df: pd.DataFrame, security_type: str) -> pd.DataFrame:
+def calculate_mxs_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, float_df: pd.DataFrame, security_type: str) -> pd.DataFrame:
     df = stock_df.merge(
         index_df.rename(
             columns={
@@ -646,14 +681,19 @@ def calculate_ths_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, flo
     else:
         build_position_signal = np.zeros(len(df), dtype=int)
 
-    peak_bars = peakbars_close(close, percent=5, occurrence=1)
+    v6 = safe_divide(close, ref(close, 3)) >= 1.1
+    v7 = backset(v6, 3)
+    buy_breakout_signal = np.where(v7 & (count_condition(v7, 3) == 1), 1, 0)
+
+    peak_bars = peakbars_close(close, percent=15, occurrence=1)
     head = pd.Series(np.where(peak_bars < 10, 100.0, 0.0), index=df.index)
     sell_signal = np.where(head > ref(head, 1).fillna(0), 1, 0)
 
-    trough_bars = troughbars_close(close, percent=5, occurrence=1)
+    trough_bars = troughbars_close(close, percent=15, occurrence=1)
     bottom = pd.Series(np.where(trough_bars < 10, 50.0, 0.0), index=df.index)
     buy_bottom_signal = np.where(bottom > ref(bottom, 1).fillna(0), 1, 0)
 
+    display_buy_signal = np.where((buy_breakout_signal > 0) | (buy_bottom_signal > 0), 1, 0)
     main_force_line = safe_divide(close - rolling_llv(low, 30), rolling_hhv(close, 30) - rolling_llv(low, 30)) * 100
 
     build_position_series = pd.Series(build_position_signal, index=df.index, dtype=float)
@@ -677,8 +717,10 @@ def calculate_ths_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, flo
             "stock_open": open_price,
             "retail_line": retail_line,
             "build_position_signal": build_position_signal,
+            "buy_breakout_signal": buy_breakout_signal,
             "buy_bottom_signal": buy_bottom_signal,
             "sell_signal": sell_signal,
+            "display_buy_signal": display_buy_signal,
             "exec_buy_signal": exec_buy_signal,
             "exec_sell_signal": exec_sell_signal,
             "main_force_line": main_force_line,
@@ -782,7 +824,7 @@ def build_point_in_time_signal_table(
         stock_slice = stock_df[stock_df["trade_date"] <= trade_date].reset_index(drop=True)
         index_slice = index_df[index_df["trade_date"] <= trade_date].reset_index(drop=True)
         float_slice = float_df[float_df["trade_date"] <= trade_date].reset_index(drop=True)
-        daily_result = calculate_ths_indicators(stock_slice, index_slice, float_slice, security_type)
+        daily_result = calculate_mxs_indicators(stock_slice, index_slice, float_slice, security_type)
         pt_rows.append(daily_result.iloc[-1])
 
     if not pt_rows:
@@ -791,8 +833,10 @@ def build_point_in_time_signal_table(
             "stock_open",
             "retail_line",
             "build_position_signal",
+            "buy_breakout_signal",
             "buy_bottom_signal",
             "sell_signal",
+            "display_buy_signal",
             "exec_buy_signal",
             "exec_sell_signal",
             "main_force_line",
@@ -801,9 +845,24 @@ def build_point_in_time_signal_table(
     return pd.DataFrame(pt_rows).reset_index(drop=True)
 
 
-def calculate_scan_sell_signals(stock_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_mxs_scan_signals(stock_df: pd.DataFrame) -> pd.DataFrame:
     close = stock_df["close"]
     low = stock_df["low"]
+    
+    v6 = safe_divide(close, ref(close, 3)) >= 1.1
+    v7 = backset(v6, 3)
+    buy_breakout_signal = np.where(v7 & (count_condition(v7, 3) == 1), 1, 0)
+
+    peak_bars = peakbars_close(close, percent=15, occurrence=1)
+    head = pd.Series(np.where(peak_bars < 10, 100.0, 0.0), index=stock_df.index)
+    sell_signal = np.where(head > ref(head, 1).fillna(0), 1, 0)
+
+    trough_bars = troughbars_close(close, percent=15, occurrence=1)
+    bottom = pd.Series(np.where(trough_bars < 10, 50.0, 0.0), index=stock_df.index)
+    buy_bottom_signal = np.where(bottom > ref(bottom, 1).fillna(0), 1, 0)
+
+    display_buy_signal = np.where((buy_breakout_signal > 0) | (buy_bottom_signal > 0), 1, 0)
+
     main_force_line = safe_divide(close - rolling_llv(low, 30), rolling_hhv(close, 30) - rolling_llv(low, 30)) * 100
     prev_main_force = ref(main_force_line, 1)
     exec_sell_signal = np.where(
@@ -815,6 +874,10 @@ def calculate_scan_sell_signals(stock_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "trade_date": stock_df["trade_date"],
+            "buy_breakout_signal": buy_breakout_signal,
+            "buy_bottom_signal": buy_bottom_signal,
+            "sell_signal": sell_signal,
+            "display_buy_signal": display_buy_signal,
             "exec_buy_signal": np.zeros(len(stock_df), dtype=int),
             "exec_sell_signal": exec_sell_signal,
         }
@@ -836,7 +899,7 @@ def build_scan_indicator_result(
     if scan_type == "sell":
         data_start_date = extend_start_date(start_date, buffer_days=60)
         stock_df = fetch_daily_data(pro, ts_code, security_type, data_start_date, end_date, is_index=False)
-        result_df = calculate_scan_sell_signals(stock_df)
+        result_df = calculate_mxs_scan_signals(stock_df)
     else:
         if not resolved_index_code:
             raise ValueError(f"无法根据代码推断指数代码，请通过 --index-code 指定: {ts_code}")
@@ -844,7 +907,7 @@ def build_scan_indicator_result(
         stock_df = fetch_daily_data(pro, ts_code, security_type, data_start_date, end_date, is_index=False)
         index_df = fetch_daily_data(pro, resolved_index_code, security_type, data_start_date, end_date, is_index=True)
         float_df = fetch_float_share(pro, ts_code, data_start_date, end_date, security_type)
-        result_df = calculate_ths_indicators(stock_df, index_df, float_df, security_type)[["trade_date", "exec_buy_signal", "exec_sell_signal"]]
+        result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)[["trade_date", "exec_buy_signal", "exec_sell_signal", "display_buy_signal", "sell_signal", "buy_breakout_signal", "buy_bottom_signal"]]
 
     result_df = result_df[(result_df["trade_date"] >= start_date) & (result_df["trade_date"] <= end_date)].reset_index(drop=True)
     metadata = {
@@ -887,7 +950,7 @@ def build_indicator_result(
     index_df = fetch_daily_data(pro, resolved_index_code, security_type, data_start_date, end_date, is_index=True)
     float_df = fetch_float_share(pro, resolved_ts_code, data_start_date, end_date, security_type)
 
-    result_df = calculate_ths_indicators(stock_df, index_df, float_df, security_type)
+    result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)
     result_df = result_df[(result_df["trade_date"] >= start_date) & (result_df["trade_date"] <= end_date)].reset_index(drop=True)
 
     if include_pt_signals:

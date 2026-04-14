@@ -65,9 +65,9 @@ def build_output_path(end_date: str, output_csv: str | None, scan_type: str, mar
         return Path(output_csv).resolve()
     market_suffix = f"_{market}" if market else ""
     if scan_type == "sell":
-        filename = f"recent_sell_without_buy2{market_suffix}_{end_date}.csv"
+        filename = f"recent_sell_without_buy{market_suffix}_{end_date}.csv"
     else:
-        filename = f"recent_buy_without_sell2{market_suffix}_{end_date}.csv"
+        filename = f"recent_buy_without_sell{market_suffix}_{end_date}.csv"
     return (Path(__file__).resolve().parent / "data" / filename).resolve()
 
 

@@ -85,6 +85,7 @@ def api_call_with_retry(api_func, pro_api_instance, max_retries: int = 3, retry_
                 result = api_func(**kwargs, fields=["trade_date", "close", "open", "high", "low", "vol"])
             else:
                 result = api_func(**kwargs, fields=fields)
+            print(f"✅ API 调用成功")
             return result
             
         except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, 

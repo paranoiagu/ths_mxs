@@ -1,0 +1,4 @@
+tushare
+python-dotenv
+numpy
+pandas

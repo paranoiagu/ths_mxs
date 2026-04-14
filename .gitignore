@@ -1,0 +1,8 @@
+.vscode
+.idea
+.git
+.DS_Store
+__pycache__
+.env
+data
+result

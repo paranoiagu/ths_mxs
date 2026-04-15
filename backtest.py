@@ -45,6 +45,27 @@ def safe_divide(numerator: pd.Series, denominator: pd.Series | float) -> pd.Seri
     return numerator.astype(float).div(denominator.astype(float))
 
 
+def calculate_obv(close: pd.Series, vol: pd.Series) -> pd.DataFrame:
+    """计算 OBV 系列指标：返回包含 obv 和 ma_obv 均线的 DataFrame"""
+    direction = np.sign(close.diff())
+    direction.iloc[0] = 0
+    obv = (vol * direction).cumsum()
+    return pd.DataFrame({"obv": obv})
+
+
+def get_obv_status(obv: pd.Series, window: int = 5) -> tuple[pd.Series, pd.Series]:
+    """返回 (obv_status(布尔序列), 归一化趋势系数(Pearson Correlation)序列 [-1, 1])"""
+    # 构造一条单调递增的时间刻度线 [0, 1, 2, ..., N-1]
+    time_index = pd.Series(np.arange(len(obv)), index=obv.index)
+    
+    # 滚动计算 OBV 与时间的皮尔逊相关系数，结果完美落在 [-1, 1]
+    # 皮尔逊相关系数 > 0，在数学上严格等价于最小二乘法斜率 > 0
+    trend_score = obv.rolling(window=window).corr(time_index).fillna(0.0)
+    
+    obv_status = (trend_score > 0).astype(int)
+    return obv_status, trend_score
+
+
 def rolling_ma(series: pd.Series, window: int) -> pd.Series:
     return series.rolling(window=window, min_periods=window).mean()
 
@@ -882,6 +903,10 @@ def calculate_mxs_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, flo
         0,
     )
 
+    # 深度整合 OBV 逻辑
+    obv_df = calculate_obv(close, vol)
+    obv_status, obv_slope = get_obv_status(obv_df["obv"], window=5)
+
     return pd.DataFrame(
         {
             "trade_date": df["trade_date"],
@@ -895,6 +920,8 @@ def calculate_mxs_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, flo
             "exec_buy_signal": exec_buy_signal,
             "exec_sell_signal": exec_sell_signal,
             "main_force_line": main_force_line,
+            "obv_status": obv_status,
+            "obv_trend_score": obv_slope,
         }
     )
 
@@ -1042,6 +1069,11 @@ def calculate_mxs_scan_signals(stock_df: pd.DataFrame) -> pd.DataFrame:
         1,
         0,
     )
+
+    # 深度整合 OBV 逻辑
+    obv_df = calculate_obv(close, stock_df["vol"])
+    obv_status, obv_slope = get_obv_status(obv_df["obv"], window=5)
+
     return pd.DataFrame(
         {
             "trade_date": stock_df["trade_date"],
@@ -1051,6 +1083,8 @@ def calculate_mxs_scan_signals(stock_df: pd.DataFrame) -> pd.DataFrame:
             "display_buy_signal": display_buy_signal,
             "exec_buy_signal": np.zeros(len(stock_df), dtype=int),
             "exec_sell_signal": exec_sell_signal,
+            "obv_status": obv_status,
+            "obv_trend_score": obv_slope,
         }
     )
 
@@ -1078,7 +1112,7 @@ def build_scan_indicator_result(
         stock_df = fetch_daily_data(pro, ts_code, security_type, data_start_date, end_date, is_index=False)
         index_df = fetch_daily_data(pro, resolved_index_code, security_type, data_start_date, end_date, is_index=True)
         float_df = fetch_float_share(pro, ts_code, data_start_date, end_date, security_type)
-        result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)[["trade_date", "exec_buy_signal", "exec_sell_signal", "display_buy_signal", "sell_signal", "buy_breakout_signal", "buy_bottom_signal"]]
+        result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)[["trade_date", "exec_buy_signal", "exec_sell_signal", "display_buy_signal", "sell_signal", "buy_breakout_signal", "buy_bottom_signal", "obv_status", "obv_trend_score"]]
 
     result_df = result_df[(result_df["trade_date"] >= start_date) & (result_df["trade_date"] <= end_date)].reset_index(drop=True)
     metadata = {

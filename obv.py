@@ -17,19 +17,10 @@ def calculate_obv(close: pd.Series, vol: pd.Series) -> pd.DataFrame:
     obv = (vol * direction).cumsum()
     return pd.DataFrame({"obv": obv})
 
-def get_obv_status(obv: pd.Series, ma_window: int = 30) -> tuple[bool, pd.Series]:
-    """
-    通过行情软件常用的法则判定：
-    计算 OBV 的 MA(ma_window) 均线
-    返回: (当前OBV是否大于均线也就是金叉向上状态, ma_obv序列)
-    """
-    ma_obv = obv.rolling(window=ma_window, min_periods=1).mean()
-    
-    is_above_ma = False
-    if len(obv) > 0 and len(ma_obv) > 0:
-        is_above_ma = obv.iloc[-1] > ma_obv.iloc[-1]
-        
-    return is_above_ma, ma_obv
+def get_obv_status_local(obv: pd.Series, window: int = 5) -> tuple[pd.Series, pd.Series]:
+    # Placeholder for older logic or unused function. 
+    # The actual get_obv_status is imported from backtest.py.
+    pass
 
 
 def parse_args():
@@ -37,7 +28,7 @@ def parse_args():
     parser.add_argument("--code", required=True, help="股票或ETF代码，如 000001、510300 等")
     parser.add_argument("--start-date", default=None, help="开始日期 YYYYMMDD")
     parser.add_argument("--end-date", default=None, help="结束日期 YYYYMMDD")
-    parser.add_argument("--window", type=int, default=30, help="MAOBV 的均线天数，行情软件标准默认使用30天")
+    parser.add_argument("--window", type=int, default=5, help="计算OBV趋势的时间窗口，用户指定默认5天")
     return parser.parse_args()
 
 
@@ -87,9 +78,11 @@ def main():
     obv_df = calculate_obv(df["close"], df["vol"])
     df["obv"] = obv_df["obv"]
     
-    # 按照标准行情软件指标判定法则
-    is_above_ma, ma_obv_series = get_obv_status(df["obv"], ma_window=args.window)
-    df["ma_obv"] = ma_obv_series
+    from backtest import get_obv_status
+    
+    # 按照 N日趋势 判定法则，获得介于 [-1, 1] 的相关系数得分
+    obv_status_series, trend_score_series = get_obv_status(df["obv"], window=args.window)
+    df["trend_score"] = trend_score_series
     
     mask = (df["trade_date"] >= start_date) & (df["trade_date"] <= end_date)
     period_df = df[mask].copy()
@@ -99,25 +92,30 @@ def main():
         return
         
     print("-" * 50)
-    print(f"[{sec_name} - {ts_code}] OBV (能量潮) 定向分析")
+    print(f"[{sec_name} - {ts_code}] OBV 定向分析")
     print(f"分析区间: {start_date} 至 {end_date}")
-    print(f"对比法则: 当前 OBV 穿越 MAOBV({args.window})")
+    print(f"对比法则: 最近 {args.window} 个交易日的趋势系数 [-1, 1]")
     
-    diff_percent = 0.0
-    if df["ma_obv"].iloc[-1] != 0:
-        diff_percent = (df["obv"].iloc[-1] / df["ma_obv"].iloc[-1] - 1) * 100
-        
-    status = f"强势多头 📈 (位于均线之上 {diff_percent:+.2f}%)" if is_above_ma else f"弱势空头 📉 (位于均线之下 {diff_percent:+.2f}%)"
+    rising = False
+    score_val = 0.0
+    if len(df) > 0:
+        score_val = df["trend_score"].iloc[-1]
+        if pd.notna(score_val) and score_val > 0:
+            rising = True
+            
+    status = "向上 (Rising) 📈" if rising else "向下/震荡 (Falling/Flat) 📉"
     print(f"当前状态: {status}")
+    print(f"趋势得分: {score_val:+.4f} (越接近 +1 意味着该阶段上攻越纯粹)")
     print("-" * 50)
     
     # 打印最终几天的参考数值
-    print("最近 10 个交易日的 OBV vs 均线 数据：")
+    print(f"最近 10 个交易日的 OBV vs 趋势系数 数据：")
     
     # 为了直观打印，将 DataFrame float 格式化一下
-    recent_5 = df.tail(10)[["trade_date", "close", "vol", "obv", "ma_obv"]].copy()
-    for col in ["obv", "ma_obv"]:
-        recent_5[col] = recent_5[col].apply(lambda x: f"{x:,.0f}")
+    recent_5 = df.tail(10)[["trade_date", "close", "vol", "obv", "trend_score"]].copy()
+    for col in ["obv"]:
+        recent_5[col] = recent_5[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "NaN")
+    recent_5["trend_score"] = recent_5["trend_score"].apply(lambda x: f"{x:+.4f}" if pd.notna(x) else "NaN")
         
     print(recent_5.to_string(index=False))
 

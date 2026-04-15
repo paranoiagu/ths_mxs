@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=None, help="结束日期 YYYYMMDD")
     parser.add_argument("--scan-type", choices=["buy", "sell", "both"], default="buy", help="扫描类型: buy/sell/both")
     parser.add_argument("--security-type", choices=["stock", "etf", "both"], default="stock", help="证券类型选择：stock(仅股票), etf(仅场内基金), both(全部)")
+    parser.add_argument("--filter-obv", action="store_true", help="是否过滤掉 OBV 不是向上趋势的股票，默认不过滤全部输出")
     parser.add_argument("--output-csv", default=None, help="输出 CSV 路径，仅在单模式下生效")
     return parser.parse_args()
 
@@ -175,31 +176,7 @@ def main() -> None:
         universe = [item for item in universe if item.get("ts_code") not in loss_codes]
         print(f"已过滤亏损股 {before - len(universe)} 支，剩余 {len(universe)} 支\n")
 
-    # 非 --codes 模式下，计算 OBV 斜率，过滤斜率非正的并保存斜率值
-    obv_slope_map: dict[str, float] = {}
-    if not args.codes and backtest._mem_range_covers(data_start_date, end_date):
-        obv_filtered: set[str] = set()
-        stock_by_code = backtest._mem_stock_by_code
-        for code, df in stock_by_code.items():
-            if len(df) < 10:
-                continue
-            df = df.sort_values("trade_date").reset_index(drop=True)
-            obv = calculate_obv(df["close"], df["vol"])["obv"]
-            recent_obv = obv.tail(5).values
-            if len(recent_obv) < 5:
-                continue
-            x = np.arange(5, dtype=float)
-            y = recent_obv
-            n = len(x)
-            slope = (n * np.sum(x * y) - np.sum(x) * np.sum(y)) / (n * np.sum(x * x) - np.sum(x) ** 2)
-            if slope <= 0:
-                obv_filtered.add(code)
-            else:
-                obv_slope_map[code] = slope
-        before = len(universe)
-        universe = [item for item in universe if item.get("ts_code") not in obv_filtered]
-        print(f"已过滤 OBV 斜率非正 {before - len(universe)} 支，剩余 {len(universe)} 支\n")
-
+    # OBV 的过滤与状态已经内嵌在 backtest.py 的核心函数中，以保障复权数据的精确度。
     buy_matches: list[dict] = []
     sell_matches: list[dict] = []
     total = len(universe)
@@ -254,14 +231,22 @@ def main() -> None:
                 sell_col="sell_signal",
             )
             if buy_signal_date is not None:
-                buy_matches.append(
-                    {
-                        "ts_code": metadata["ts_code"],
-                        "name": metadata["name"],
-                        "buy_signal_date": buy_signal_date,
-                        "obv_slope": round(obv_slope_map.get(metadata["ts_code"], 0), 2),
-                    }
-                )
+                target_rows = result_df[result_df["trade_date"] == buy_signal_date]
+                if not target_rows.empty:
+                    obv_status = target_rows.iloc[0].get("obv_status", 0)
+                    obv_trend_score = target_rows.iloc[0].get("obv_trend_score", 0.0)
+                    if args.filter_obv and obv_status == 0:
+                        pass
+                    else:
+                        buy_matches.append(
+                            {
+                                "ts_code": metadata["ts_code"],
+                                "name": metadata["name"],
+                                "buy_signal_date": buy_signal_date,
+                                "obv_status": "强势多头📈" if obv_status == 1 else "弱势空头📉",
+                                "trend_score": round(obv_trend_score, 4),
+                            }
+                        )
 
         if args.scan_type in {"sell", "both"}:
             sell_signal_date = find_recent_sell_without_buy(
@@ -271,14 +256,22 @@ def main() -> None:
                 buy_col="display_buy_signal",
             )
             if sell_signal_date is not None:
-                sell_matches.append(
-                    {
-                        "ts_code": metadata["ts_code"],
-                        "name": metadata["name"],
-                        "sell_signal_date": sell_signal_date,
-                        "obv_slope": round(obv_slope_map.get(metadata["ts_code"], 0), 2),
-                    }
-                )
+                target_rows = result_df[result_df["trade_date"] == sell_signal_date]
+                if not target_rows.empty:
+                    obv_status = target_rows.iloc[0].get("obv_status", 0)
+                    obv_trend_score = target_rows.iloc[0].get("obv_trend_score", 0.0)
+                    if args.filter_obv and obv_status == 0:
+                        pass
+                    else:
+                        sell_matches.append(
+                            {
+                                "ts_code": metadata["ts_code"],
+                                "name": metadata["name"],
+                                "sell_signal_date": sell_signal_date,
+                                "obv_status": "强势多头📈" if obv_status == 1 else "弱势空头📉",
+                                "trend_score": round(obv_trend_score, 4),
+                            }
+                        )
 
     if args.scan_type in {"buy", "both"}:
         buy_result_df = sort_result_df(pd.DataFrame(buy_matches), "buy_signal_date")

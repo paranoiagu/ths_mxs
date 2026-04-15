@@ -56,7 +56,7 @@ def build_formula_review_scan_result(
     if not index_df.empty:
         result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)
         keep_cols = ["trade_date", "buy_breakout_signal", "buy_bottom_signal", "sell_signal",
-                     "display_buy_signal", "exec_buy_signal", "exec_sell_signal"]
+                     "display_buy_signal", "exec_buy_signal", "exec_sell_signal", "obv_status", "obv_trend_score"]
         result_df = result_df[[c for c in keep_cols if c in result_df.columns]]
     else:
         result_df = calculate_mxs_scan_signals(stock_df)

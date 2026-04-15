@@ -25,14 +25,15 @@ DEFAULT_INDEX_CODE_MAP = {
     "603": "000001.SH",
     "605": "000001.SH",
     "688": "000001.SH",
-    "510": "000300.SH",
-    "511": "000300.SH",
-    "512": "000300.SH",
-    "513": "000300.SH",
-    "515": "000300.SH",
-    "516": "000300.SH",
-    "517": "000300.SH",
-    "518": "000300.SH",
+    "510": "000001.SH",
+    "511": "000001.SH",
+    "512": "000001.SH",
+    "513": "000001.SH",
+    "515": "000001.SH",
+    "516": "000001.SH",
+    "517": "000001.SH",
+    "518": "000001.SH",
+    "588": "000001.SH",
     "159": "399001.SZ",
 }
 
@@ -563,6 +564,25 @@ def fetch_daily_data(pro, ts_code: str, security_type: str, start_date: str, end
 
 
 def fetch_float_share(pro, ts_code: str, start_date: str, end_date: str, security_type: str) -> pd.DataFrame:
+    if security_type == "etf" or security_type == "fund":
+        try:
+            float_df = api_call_with_retry(
+                pro.fund_share,
+                pro_api_instance=pro,
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date,
+                timeout=120,
+            )
+            if float_df is not None and not float_df.empty and "fd_share" in float_df.columns:
+                float_df = float_df.rename(columns={"fd_share": "float_share"})
+                float_df["trade_date"] = float_df["trade_date"].astype(str)
+                float_df["float_share"] = pd.to_numeric(float_df["float_share"], errors="coerce")
+                return float_df[["trade_date", "float_share"]].sort_values("trade_date").reset_index(drop=True)
+        except Exception as exc:
+            print(f"获取 fund_share 失败: {exc}")
+        return pd.DataFrame(columns=["trade_date", "float_share"])
+
     if security_type != "stock":
         return pd.DataFrame(columns=["trade_date", "float_share"])
 
@@ -641,7 +661,7 @@ def calculate_mxs_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, flo
     vara = 3 * var8 - 2 * sma_tdx(var8, 15, 1)
     retail_line = 100 - vara
 
-    if security_type == "stock" and df["float_share"].notna().any():
+    if security_type in ("stock", "etf", "fund") and df["float_share"].notna().any():
         capital_hands = df["float_share"] * 100.0
         vare = ref(low, 1) * 0.9
         varf = low * 0.9
@@ -893,8 +913,8 @@ def build_scan_indicator_result(
     end_date: str,
     scan_type: str,
     index_code: Optional[str] = None,
+    security_type: str = "stock",
 ) -> tuple[pd.DataFrame, dict]:
-    security_type = "stock"
     resolved_index_code = index_code or infer_index_code_from_ts_code(ts_code)
     if scan_type == "sell":
         data_start_date = extend_start_date(start_date, buffer_days=60)

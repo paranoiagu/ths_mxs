@@ -37,11 +37,30 @@ def build_formula_review_scan_result(
     security_name: str,
     start_date: str,
     end_date: str,
+    security_type: str = "stock",
 ) -> tuple[pd.DataFrame, dict]:
-    security_type = "stock"
     data_start_date = extend_start_date(start_date, buffer_days=270)
     stock_df = fetch_daily_data(pro, ts_code, security_type, data_start_date, end_date, is_index=False)
-    result_df = calculate_mxs_scan_signals(stock_df)
+
+    resolved_index_code = infer_index_code_from_ts_code(ts_code)
+    if resolved_index_code:
+        try:
+            index_df = fetch_daily_data(pro, resolved_index_code, security_type, data_start_date, end_date, is_index=True)
+        except Exception:
+            index_df = pd.DataFrame(columns=["trade_date", "open", "high", "low", "close", "vol"])
+    else:
+        index_df = pd.DataFrame(columns=["trade_date", "open", "high", "low", "close", "vol"])
+
+    float_df = fetch_float_share(pro, ts_code, data_start_date, end_date, security_type)
+
+    if not index_df.empty:
+        result_df = calculate_mxs_indicators(stock_df, index_df, float_df, security_type)
+        keep_cols = ["trade_date", "buy_breakout_signal", "buy_bottom_signal", "sell_signal",
+                     "display_buy_signal", "exec_buy_signal", "exec_sell_signal"]
+        result_df = result_df[[c for c in keep_cols if c in result_df.columns]]
+    else:
+        result_df = calculate_mxs_scan_signals(stock_df)
+
     result_df = result_df[(result_df["trade_date"] >= start_date) & (result_df["trade_date"] <= end_date)].reset_index(drop=True)
 
     metadata = {
@@ -51,7 +70,7 @@ def build_formula_review_scan_result(
         "name": security_name,
         "start_date": start_date,
         "end_date": end_date,
-        "index_code": None,
+        "index_code": resolved_index_code,
     }
     return result_df, metadata
 

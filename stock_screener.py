@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", default=None, help="开始日期 YYYYMMDD")
     parser.add_argument("--end-date", default=None, help="结束日期 YYYYMMDD")
     parser.add_argument("--scan-type", choices=["buy", "sell", "both"], default="buy", help="扫描类型: buy/sell/both")
+    parser.add_argument("--security-type", choices=["stock", "etf", "both"], default="stock", help="证券类型选择：stock(仅股票), etf(仅场内基金), both(全部)")
     parser.add_argument("--output-csv", default=None, help="输出 CSV 路径，仅在单模式下生效")
     return parser.parse_args()
 
@@ -113,18 +114,28 @@ def find_recent_buy_without_sell(
     return last_buy_signal_date
 
 
-def load_stock_universe(pro, codes_arg: str | None, market: str | None = None) -> list[dict]:
+def load_stock_universe(pro, codes_arg: str | None, market: str | None = None, security_type: str = "stock") -> list[dict]:
     if codes_arg:
         codes = [normalize_code_input(code) for code in codes_arg.split(",") if code.strip()]
         return [{"input_code": code} for code in codes]
 
-    stock_df = pro.stock_basic(exchange="SSE,SZSE", list_status="L", market=market or "", fields="ts_code,symbol,name")
-    if stock_df is None or stock_df.empty:
-        return []
+    items = []
+    
+    if security_type in ("stock", "both"):
+        stock_df = pro.stock_basic(exchange="SSE,SZSE", list_status="L", market=market or "", fields="ts_code,symbol,name")
+        if stock_df is not None and not stock_df.empty:
+            stock_df["input_code"] = stock_df["symbol"].astype(str)
+            stock_df["security_type"] = "stock"
+            items.extend(stock_df[["input_code", "ts_code", "name", "security_type"]].to_dict(orient="records"))
 
-    stock_df = stock_df.copy()
-    stock_df["input_code"] = stock_df["symbol"].astype(str)
-    return stock_df[["input_code", "ts_code", "name"]].to_dict(orient="records")
+    if security_type in ("etf", "both"):
+        fund_df = pro.fund_basic(market="E", status="L", fields="ts_code,name")
+        if fund_df is not None and not fund_df.empty:
+            fund_df["input_code"] = fund_df["ts_code"].str.split(".").str[0]
+            fund_df["security_type"] = "etf"
+            items.extend(fund_df[["input_code", "ts_code", "name", "security_type"]].to_dict(orient="records"))
+            
+    return items
 
 
 def main() -> None:
@@ -139,7 +150,7 @@ def main() -> None:
         end_date = default_end
     start_date, end_date = get_scan_window(end_date)
 
-    universe = load_stock_universe(pro, args.codes, args.market)
+    universe = load_stock_universe(pro, args.codes, args.market, args.security_type)
     if not universe:
         print("未获取到可扫描股票列表")
         return
@@ -161,6 +172,7 @@ def main() -> None:
                     security_name=security_name,
                     start_date=start_date,
                     end_date=end_date,
+                    security_type=item.get("security_type", "stock"),
                 )
             else:
                 result_df, metadata = build_formula_review_result(
@@ -174,7 +186,7 @@ def main() -> None:
             print(f"跳过 {input_code}: {exc}")
             continue
 
-        if metadata["security_type"] != "stock":
+        if metadata["security_type"] not in ("stock", "etf", "fund"):
             continue
 
         if "ST" in str(metadata["name"]).upper():

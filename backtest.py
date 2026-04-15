@@ -234,10 +234,88 @@ def troughbars_close(series: pd.Series, percent: float, occurrence: int = 1) -> 
     return bars_since_recent_pivot(trough_mask, occurrence=occurrence)
 
 
+def get_default_end_date() -> str:
+    """17:00 之前取前一个交易日，17:00 之后取当天日期。"""
+    now = datetime.now()
+    if now.hour < 17:
+        target = now - timedelta(days=1)
+    else:
+        target = now
+    return target.strftime("%Y%m%d")
+
+
 def get_default_backtest_dates() -> tuple[str, str]:
-    today = datetime.now()
-    one_year_ago = today - timedelta(days=365)
-    return one_year_ago.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+    end_date = get_default_end_date()
+    start_dt = datetime.strptime(end_date, "%Y%m%d") - timedelta(days=365)
+    return start_dt.strftime("%Y%m%d"), end_date
+
+
+def prewarm_all_caches(pro, data_start_date: str, end_date: str) -> None:
+    """在批量扫描前一次性预热所有按日缓存，避免逐股票触发重复 API 调用。"""
+    print(f"预热缓存 ({data_start_date} ~ {end_date}) ...")
+    ensure_stock_day_cache(pro, data_start_date, end_date)
+    print("  ✔ daily 缓存完成")
+    ensure_adj_factor_day_cache(pro, data_start_date, end_date)
+    print("  ✔ adj_factor 缓存完成")
+    ensure_float_share_day_cache(pro, data_start_date, end_date)
+    print("  ✔ daily_basic (float_share) 缓存完成")
+    load_day_caches_to_memory(data_start_date, end_date)
+    print("  ✔ 内存索引加载完成")
+    print("缓存预热完成\n")
+
+
+# ---- 批量扫描用的内存缓存（按 ts_code 索引） ----
+_mem_stock_by_code: dict[str, pd.DataFrame] = {}
+_mem_adj_by_code: dict[str, pd.DataFrame] = {}
+_mem_float_by_code: dict[str, pd.DataFrame] = {}
+_mem_cache_range: tuple[str, str] | None = None
+
+
+def _mem_range_covers(start_date: str, end_date: str) -> bool:
+    return (
+        _mem_cache_range is not None
+        and _mem_cache_range[0] <= start_date
+        and _mem_cache_range[1] >= end_date
+    )
+
+
+def load_day_caches_to_memory(start_date: str, end_date: str) -> None:
+    """将所有按日 CSV 合并到内存，并按 ts_code 建立索引，后续查询为 O(1)。"""
+    global _mem_stock_by_code, _mem_adj_by_code, _mem_float_by_code, _mem_cache_range
+
+    stock_req = ["ts_code", "trade_date", "open", "high", "low", "close", "vol"]
+    adj_req = ["ts_code", "trade_date", "adj_factor"]
+    float_req = ["ts_code", "trade_date", "float_share", "pe_ttm"]
+
+    stock_frames: list[pd.DataFrame] = []
+    adj_frames: list[pd.DataFrame] = []
+    float_frames: list[pd.DataFrame] = []
+
+    for trade_date in iter_date_strings(start_date, end_date):
+        sp = get_stock_day_cache_path(trade_date)
+        if sp.exists():
+            df = read_csv_cache(sp, stock_req, ["ts_code", "trade_date"])
+            if not df.empty:
+                stock_frames.append(df)
+        ap = get_adj_factor_day_cache_path(trade_date)
+        if ap.exists():
+            df = read_csv_cache(ap, adj_req, ["ts_code", "trade_date"])
+            if not df.empty:
+                adj_frames.append(df)
+        fp = get_float_share_day_cache_path(trade_date)
+        if fp.exists():
+            df = read_csv_cache(fp, float_req, ["ts_code", "trade_date"])
+            if not df.empty:
+                float_frames.append(df)
+
+    stock_all = pd.concat(stock_frames, ignore_index=True) if stock_frames else pd.DataFrame(columns=stock_req)
+    adj_all = pd.concat(adj_frames, ignore_index=True) if adj_frames else pd.DataFrame(columns=adj_req)
+    float_all = pd.concat(float_frames, ignore_index=True) if float_frames else pd.DataFrame(columns=float_req)
+
+    _mem_stock_by_code = {code: group.reset_index(drop=True) for code, group in stock_all.groupby("ts_code")} if not stock_all.empty else {}
+    _mem_adj_by_code = {code: group.reset_index(drop=True) for code, group in adj_all.groupby("ts_code")} if not adj_all.empty else {}
+    _mem_float_by_code = {code: group.reset_index(drop=True) for code, group in float_all.groupby("ts_code")} if not float_all.empty else {}
+    _mem_cache_range = (start_date, end_date)
 
 
 def extend_start_date(start_date: str, buffer_days: int = 180) -> str:
@@ -293,6 +371,10 @@ def get_stock_day_cache_path(trade_date: str) -> Path:
 
 def get_adj_factor_day_cache_path(trade_date: str) -> Path:
     return get_cache_dir("adj_factor", "by_day") / f"{trade_date}.csv"
+
+
+def get_float_share_day_cache_path(trade_date: str) -> Path:
+    return get_cache_dir("daily_basic", "by_day") / f"{trade_date}.csv"
 
 
 def get_stock_code_cache_path(ts_code: str) -> Path:
@@ -356,8 +438,12 @@ def write_csv_cache(file_path: Path, df: pd.DataFrame, required_columns: list[st
 
 
 _ATTEMPTED_EMPTY_STOCK_DATES: set[str] = set()
+_ENSURED_STOCK_DAY_RANGE: tuple[str, str] | None = None
 
 def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
+    global _ENSURED_STOCK_DAY_RANGE
+    if _ENSURED_STOCK_DAY_RANGE == (start_date, end_date):
+        return
     required_columns = ["ts_code", "trade_date", "open", "high", "low", "close", "vol"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_stock_day_cache_path(trade_date)
@@ -378,11 +464,16 @@ def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
             fields=["ts_code", "trade_date", "open", "high", "low", "close", "vol"],
         )
         write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+    _ENSURED_STOCK_DAY_RANGE = (start_date, end_date)
 
 
 _ATTEMPTED_EMPTY_ADJ_DATES: set[str] = set()
+_ENSURED_ADJ_FACTOR_RANGE: tuple[str, str] | None = None
 
 def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
+    global _ENSURED_ADJ_FACTOR_RANGE
+    if _ENSURED_ADJ_FACTOR_RANGE == (start_date, end_date):
+        return
     required_columns = ["ts_code", "trade_date", "adj_factor"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_adj_factor_day_cache_path(trade_date)
@@ -396,6 +487,43 @@ def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
                 continue
         df = pro.adj_factor(trade_date=trade_date)
         write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+    _ENSURED_ADJ_FACTOR_RANGE = (start_date, end_date)
+
+
+_ATTEMPTED_EMPTY_FLOAT_SHARE_DATES: set[str] = set()
+_ENSURED_FLOAT_SHARE_RANGE: tuple[str, str] | None = None
+
+def ensure_float_share_day_cache(pro, start_date: str, end_date: str) -> None:
+    global _ENSURED_FLOAT_SHARE_RANGE
+    if _ENSURED_FLOAT_SHARE_RANGE == (start_date, end_date):
+        return
+    required_columns = ["ts_code", "trade_date", "float_share", "pe_ttm"]
+    for trade_date in iter_date_strings(start_date, end_date):
+        file_path = get_float_share_day_cache_path(trade_date)
+        if file_path.exists():
+            try:
+                cached = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
+                if not cached.empty and "pe_ttm" in cached.columns:
+                    if trade_date != end_date or trade_date in _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES:
+                        continue
+                    _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES.add(trade_date)
+                    continue
+            except (ValueError, KeyError):
+                pass  # 旧缓存缺少 pe_ttm 列，重新拉取
+        df = api_call_with_retry(
+            pro.daily_basic,
+            pro_api_instance=pro,
+            trade_date=trade_date,
+            timeout=120,
+            fields=["ts_code", "trade_date", "float_share", "pe_ttm"],
+        )
+        if df is not None and not df.empty:
+            write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+        else:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(columns=required_columns).to_csv(file_path, index=False, encoding="utf-8-sig")
+            _read_csv_cached_internal.cache_clear()
+    _ENSURED_FLOAT_SHARE_RANGE = (start_date, end_date)
 
 
 def reconstruct_qfq_prices(stock_df: pd.DataFrame, adj_df: pd.DataFrame) -> pd.DataFrame:
@@ -419,30 +547,36 @@ def build_stock_qfq_slice_from_day_cache(pro, ts_code: str, start_date: str, end
     if start_date > end_date:
         return pd.DataFrame(columns=["trade_date", "open", "high", "low", "close", "vol"])
 
-    ensure_stock_day_cache(pro, start_date, end_date)
-    ensure_adj_factor_day_cache(pro, start_date, end_date)
+    # 优先从内存缓存取数据（O(1) 字典查找）
+    if _mem_range_covers(start_date, end_date):
+        stock_raw_df = _mem_stock_by_code.get(ts_code, pd.DataFrame(columns=["ts_code", "trade_date", "open", "high", "low", "close", "vol"])).copy()
+        adj_factor_df = _mem_adj_by_code.get(ts_code, pd.DataFrame(columns=["ts_code", "trade_date", "adj_factor"])).copy()
+    else:
+        ensure_stock_day_cache(pro, start_date, end_date)
+        ensure_adj_factor_day_cache(pro, start_date, end_date)
 
-    stock_frames: list[pd.DataFrame] = []
-    adj_frames: list[pd.DataFrame] = []
-    for trade_date in iter_date_strings(start_date, end_date):
-        stock_day_df = read_csv_cache(
-            get_stock_day_cache_path(trade_date),
-            required_columns=["ts_code", "trade_date", "open", "high", "low", "close", "vol"],
-            dedupe_subset=["ts_code", "trade_date"],
-        )
-        if not stock_day_df.empty:
-            stock_frames.append(stock_day_df[stock_day_df["ts_code"] == ts_code])
+        stock_frames: list[pd.DataFrame] = []
+        adj_frames: list[pd.DataFrame] = []
+        for trade_date in iter_date_strings(start_date, end_date):
+            stock_day_df = read_csv_cache(
+                get_stock_day_cache_path(trade_date),
+                required_columns=["ts_code", "trade_date", "open", "high", "low", "close", "vol"],
+                dedupe_subset=["ts_code", "trade_date"],
+            )
+            if not stock_day_df.empty:
+                stock_frames.append(stock_day_df[stock_day_df["ts_code"] == ts_code])
 
-        adj_day_df = read_csv_cache(
-            get_adj_factor_day_cache_path(trade_date),
-            required_columns=["ts_code", "trade_date", "adj_factor"],
-            dedupe_subset=["ts_code", "trade_date"],
-        )
-        if not adj_day_df.empty:
-            adj_frames.append(adj_day_df[adj_day_df["ts_code"] == ts_code])
+            adj_day_df = read_csv_cache(
+                get_adj_factor_day_cache_path(trade_date),
+                required_columns=["ts_code", "trade_date", "adj_factor"],
+                dedupe_subset=["ts_code", "trade_date"],
+            )
+            if not adj_day_df.empty:
+                adj_frames.append(adj_day_df[adj_day_df["ts_code"] == ts_code])
 
-    stock_raw_df = pd.concat(stock_frames, ignore_index=True) if stock_frames else pd.DataFrame(columns=["ts_code", "trade_date", "open", "high", "low", "close", "vol"])
-    adj_factor_df = pd.concat(adj_frames, ignore_index=True) if adj_frames else pd.DataFrame(columns=["ts_code", "trade_date", "adj_factor"])
+        stock_raw_df = pd.concat(stock_frames, ignore_index=True) if stock_frames else pd.DataFrame(columns=["ts_code", "trade_date", "open", "high", "low", "close", "vol"])
+        adj_factor_df = pd.concat(adj_frames, ignore_index=True) if adj_frames else pd.DataFrame(columns=["ts_code", "trade_date", "adj_factor"])
+
     if stock_raw_df.empty:
         return pd.DataFrame(columns=["trade_date", "open", "high", "low", "close", "vol"])
 
@@ -598,39 +732,42 @@ def fetch_float_share(pro, ts_code: str, start_date: str, end_date: str, securit
         return pd.DataFrame(columns=["trade_date", "float_share"])
 
     if security_type != "stock":
-        return pd.DataFrame(columns=["trade_date", "float_share"])
+        return pd.DataFrame(columns=["trade_date", "float_share", "pe_ttm"])
 
-    float_df = pd.DataFrame(columns=["trade_date", "float_share"])
+    # 优先从内存缓存取数据（O(1) 字典查找）
+    if _mem_range_covers(start_date, end_date):
+        code_df = _mem_float_by_code.get(ts_code)
+        if code_df is None or code_df.empty:
+            return pd.DataFrame(columns=["trade_date", "float_share", "pe_ttm"])
+        code_df = code_df.copy()
+        code_df["trade_date"] = code_df["trade_date"].astype(str)
+        code_df["float_share"] = pd.to_numeric(code_df["float_share"], errors="coerce")
+        code_df["pe_ttm"] = pd.to_numeric(code_df["pe_ttm"], errors="coerce")
+        return code_df[["trade_date", "float_share", "pe_ttm"]].sort_values("trade_date").reset_index(drop=True)
 
-    try:
-        float_df = pro.daily_basic(
-            ts_code=ts_code,
-            start_date=start_date,
-            end_date=end_date,
-            fields="trade_date,float_share",
+    ensure_float_share_day_cache(pro, start_date, end_date)
+
+    required_columns = ["ts_code", "trade_date", "float_share", "pe_ttm"]
+    frames: list[pd.DataFrame] = []
+    for trade_date in iter_date_strings(start_date, end_date):
+        day_df = read_csv_cache(
+            get_float_share_day_cache_path(trade_date),
+            required_columns=required_columns,
+            dedupe_subset=["ts_code", "trade_date"],
         )
-    except Exception as exc:
-        print(f"获取 daily_basic.float_share 失败，将尝试 stk_premarket: {exc}")
+        if not day_df.empty:
+            code_df = day_df[day_df["ts_code"] == ts_code]
+            if not code_df.empty:
+                frames.append(code_df)
 
-    if float_df is None or float_df.empty:
-        try:
-            float_df = pro.stk_premarket(
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date,
-                fields="trade_date,float_share",
-            )
-        except Exception as exc:
-            print(f"获取 stk_premarket.float_share 失败: {exc}")
-            float_df = pd.DataFrame(columns=["trade_date", "float_share"])
+    if not frames:
+        return pd.DataFrame(columns=["trade_date", "float_share", "pe_ttm"])
 
-    if float_df.empty:
-        return float_df
-
-    float_df = float_df.copy()
-    float_df["trade_date"] = float_df["trade_date"].astype(str)
-    float_df["float_share"] = pd.to_numeric(float_df["float_share"], errors="coerce")
-    return float_df[["trade_date", "float_share"]].sort_values("trade_date").reset_index(drop=True)
+    merged_df = pd.concat(frames, ignore_index=True)
+    merged_df["trade_date"] = merged_df["trade_date"].astype(str)
+    merged_df["float_share"] = pd.to_numeric(merged_df["float_share"], errors="coerce")
+    merged_df["pe_ttm"] = pd.to_numeric(merged_df["pe_ttm"], errors="coerce")
+    return merged_df[["trade_date", "float_share", "pe_ttm"]].sort_values("trade_date").reset_index(drop=True)
 
 
 def build_output_path(ts_code: str, output_csv: Optional[str]) -> Path:

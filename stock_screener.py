@@ -1,11 +1,14 @@
 import argparse
+import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
 
-from backtest import get_default_backtest_dates, normalize_code_input
+from backtest import get_default_backtest_dates, normalize_code_input, extend_start_date, prewarm_all_caches
+from obv import calculate_obv
+import backtest
 from mxs_indicator import build_formula_review_result, build_formula_review_scan_result
 from util import init_tushare
 
@@ -155,6 +158,48 @@ def main() -> None:
         print("未获取到可扫描股票列表")
         return
 
+    data_start_date = extend_start_date(start_date, buffer_days=270)
+    prewarm_all_caches(pro, data_start_date, end_date)
+
+    # 非 --codes 模式下，利用 daily_basic 中的 pe_ttm 过滤亏损股（pe_ttm 为空表示亏损）
+    if not args.codes and backtest._mem_range_covers(data_start_date, end_date):
+        loss_codes: set[str] = set()
+        for code, df in backtest._mem_float_by_code.items():
+            if df.empty:
+                continue
+            latest = df.iloc[-1]
+            pe = latest.get("pe_ttm")
+            if pd.isna(pe):
+                loss_codes.add(code)
+        before = len(universe)
+        universe = [item for item in universe if item.get("ts_code") not in loss_codes]
+        print(f"已过滤亏损股 {before - len(universe)} 支，剩余 {len(universe)} 支\n")
+
+    # 非 --codes 模式下，计算 OBV 斜率，过滤斜率非正的并保存斜率值
+    obv_slope_map: dict[str, float] = {}
+    if not args.codes and backtest._mem_range_covers(data_start_date, end_date):
+        obv_filtered: set[str] = set()
+        stock_by_code = backtest._mem_stock_by_code
+        for code, df in stock_by_code.items():
+            if len(df) < 10:
+                continue
+            df = df.sort_values("trade_date").reset_index(drop=True)
+            obv = calculate_obv(df["close"], df["vol"])["obv"]
+            recent_obv = obv.tail(5).values
+            if len(recent_obv) < 5:
+                continue
+            x = np.arange(5, dtype=float)
+            y = recent_obv
+            n = len(x)
+            slope = (n * np.sum(x * y) - np.sum(x) * np.sum(y)) / (n * np.sum(x * x) - np.sum(x) ** 2)
+            if slope <= 0:
+                obv_filtered.add(code)
+            else:
+                obv_slope_map[code] = slope
+        before = len(universe)
+        universe = [item for item in universe if item.get("ts_code") not in obv_filtered]
+        print(f"已过滤 OBV 斜率非正 {before - len(universe)} 支，剩余 {len(universe)} 支\n")
+
     buy_matches: list[dict] = []
     sell_matches: list[dict] = []
     total = len(universe)
@@ -214,6 +259,7 @@ def main() -> None:
                         "ts_code": metadata["ts_code"],
                         "name": metadata["name"],
                         "buy_signal_date": buy_signal_date,
+                        "obv_slope": round(obv_slope_map.get(metadata["ts_code"], 0), 2),
                     }
                 )
 
@@ -230,6 +276,7 @@ def main() -> None:
                         "ts_code": metadata["ts_code"],
                         "name": metadata["name"],
                         "sell_signal_date": sell_signal_date,
+                        "obv_slope": round(obv_slope_map.get(metadata["ts_code"], 0), 2),
                     }
                 )
 

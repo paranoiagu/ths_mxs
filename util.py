@@ -56,7 +56,7 @@ def init_tushare():
     return pro
 
 
-def api_call_with_retry(api_func, pro_api_instance, max_retries: int = 3, retry_delay: int = 5, timeout: int = 120, fields=None, **kwargs):
+def api_call_with_retry(api_func, pro_api_instance, max_retries: int = 5, retry_delay: int = 10, timeout: int = 120, fields=None, **kwargs):
     """Call tushare API with retry mechanism and timeout handling.
     
     Args:
@@ -85,7 +85,14 @@ def api_call_with_retry(api_func, pro_api_instance, max_retries: int = 3, retry_
                 result = api_func(**kwargs, fields=["trade_date", "close", "open", "high", "low", "vol"])
             else:
                 result = api_func(**kwargs, fields=fields)
-            print(f"✅ API 调用成功")
+            api_name = getattr(api_func, '__name__', None) or getattr(api_func, '__func__', None)
+            if api_name and hasattr(api_name, '__name__'):
+                api_name = api_name.__name__
+            elif api_name:
+                api_name = str(api_name)
+            else:
+                api_name = str(api_func)
+            print(f"✅ API 调用成功 [{api_name}]")
             return result
             
         except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout, 

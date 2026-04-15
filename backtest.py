@@ -144,22 +144,34 @@ def zig_pivots(series: pd.Series, percent: float) -> tuple[pd.Series, pd.Series]
     candidate_price = values[first]
     trend = 0
 
+    # 在未确定趋势阶段，同时跟踪最高价和最低价的位置
+    highest_idx = first
+    highest_price = values[first]
+    lowest_idx = first
+    lowest_price = values[first]
+
     for idx in valid_idx[1:]:
         price = values[idx]
+
         if trend == 0:
-            up_move = (price - candidate_price) / candidate_price
-            down_move = (candidate_price - price) / candidate_price
-            if up_move >= threshold:
-                trough_mask[candidate_idx] = True
+            # 更新极值（使用 >= / <= 保证取最后一个极值点作为转折）
+            if price >= highest_price:
+                highest_idx = idx
+                highest_price = price
+            if price <= lowest_price:
+                lowest_idx = idx
+                lowest_price = price
+
+            # 检查是否确认方向：从最低点上涨超过阈值 → 最低点为谷
+            if lowest_price > 0 and (price - lowest_price) / lowest_price >= threshold:
+                trough_mask[lowest_idx] = True
                 trend = 1
                 candidate_idx = idx
                 candidate_price = price
-            elif down_move >= threshold:
-                peak_mask[candidate_idx] = True
+            # 从最高点下跌超过阈值 → 最高点为峰
+            elif highest_price > 0 and (highest_price - price) / highest_price >= threshold:
+                peak_mask[highest_idx] = True
                 trend = -1
-                candidate_idx = idx
-                candidate_price = price
-            else:
                 candidate_idx = idx
                 candidate_price = price
             continue
@@ -187,6 +199,8 @@ def zig_pivots(series: pd.Series, percent: float) -> tuple[pd.Series, pd.Series]
                 candidate_idx = idx
                 candidate_price = price
 
+    # 末尾候选点标记为峰/谷（与 THS 行为一致：PEAKBARS/TROUGHBARS 包含
+    # ZIG 末尾连接到当前价格的最后一个转折点）
     if trend == 1:
         peak_mask[candidate_idx] = True
     elif trend == -1:

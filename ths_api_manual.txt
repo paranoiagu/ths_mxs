@@ -164,3 +164,13 @@ SELLCOUNT 委卖
 TOTALSTOCK 本类股票总数
 含义：本指数所包含股票家数之和。
 用于：沪深指数的实时周期。
+
+
+
+PEAKBARS(K,N,M,ABS)
+表示之字转向ZIG(K,N,ABS)的前M个波峰到当前的周期数,M必须大于等于1。若ABS为0或省略，则表示相对ZIG转向，否则为绝对ZIG转向。
+例如：PEAKBARS(0,5,1)表示%5开盘价ZIG转向的上一个波峰到当前的周期数
+
+TROUGHBARS(K,N,M,ABS)
+表示之字转向ZIG(K,N,ABS)的前M个波谷到当前的周期数,M必须大于等于1。若ABS为0或省略，则表示相对ZIG转向，否则为绝对ZIG转向。
+例如：TROUGHBARS(2,5,2)表示%5最低价ZIG转向的前2个波谷到当前的周期数

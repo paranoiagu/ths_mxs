@@ -468,14 +468,26 @@ def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
     required_columns = ["ts_code", "trade_date", "open", "high", "low", "close", "vol"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_stock_day_cache_path(trade_date)
+        
+        cache_valid = False
         if file_path.exists():
-            if trade_date == end_date and trade_date not in _ATTEMPTED_EMPTY_STOCK_DATES:
-                df = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
-                if not df.empty:
-                    continue
-                _ATTEMPTED_EMPTY_STOCK_DATES.add(trade_date)
-            else:
-                continue
+            try:
+                cached = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
+                if not cached.empty:
+                    cache_valid = True
+            except (ValueError, KeyError, FileNotFoundError, pd.errors.EmptyDataError):
+                pass
+                
+        if cache_valid:
+            continue
+
+        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
+        if trade_date != end_date:
+            continue
+        if trade_date in _ATTEMPTED_EMPTY_STOCK_DATES:
+            continue
+        _ATTEMPTED_EMPTY_STOCK_DATES.add(trade_date)
+            
         df = api_call_with_retry(
             pro.daily,
             pro_api_instance=pro,
@@ -484,7 +496,12 @@ def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
             timeout=120,
             fields=["ts_code", "trade_date", "open", "high", "low", "close", "vol"],
         )
-        write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+        if df is not None and not df.empty:
+            write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+        else:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(columns=required_columns).to_csv(file_path, index=False, encoding="utf-8-sig")
+            _read_csv_cached_internal.cache_clear()
     _ENSURED_STOCK_DAY_RANGE = (start_date, end_date)
 
 
@@ -498,16 +515,38 @@ def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
     required_columns = ["ts_code", "trade_date", "adj_factor"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_adj_factor_day_cache_path(trade_date)
+        
+        cache_valid = False
         if file_path.exists():
-            if trade_date == end_date and trade_date not in _ATTEMPTED_EMPTY_ADJ_DATES:
-                df = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
-                if not df.empty:
-                    continue
-                _ATTEMPTED_EMPTY_ADJ_DATES.add(trade_date)
-            else:
-                continue
-        df = pro.adj_factor(trade_date=trade_date)
-        write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+            try:
+                cached = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
+                if not cached.empty:
+                    cache_valid = True
+            except (ValueError, KeyError, FileNotFoundError, pd.errors.EmptyDataError):
+                pass
+                
+        if cache_valid:
+            continue
+
+        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
+        if trade_date != end_date:
+            continue
+        if trade_date in _ATTEMPTED_EMPTY_ADJ_DATES:
+            continue
+        _ATTEMPTED_EMPTY_ADJ_DATES.add(trade_date)
+            
+        df = api_call_with_retry(
+            pro.adj_factor,
+            pro_api_instance=pro,
+            trade_date=trade_date,
+            timeout=120,
+        )
+        if df is not None and not df.empty:
+            write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])
+        else:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(columns=required_columns).to_csv(file_path, index=False, encoding="utf-8-sig")
+            _read_csv_cached_internal.cache_clear()
     _ENSURED_ADJ_FACTOR_RANGE = (start_date, end_date)
 
 
@@ -521,16 +560,25 @@ def ensure_float_share_day_cache(pro, start_date: str, end_date: str) -> None:
     required_columns = ["ts_code", "trade_date", "float_share", "pe_ttm"]
     for trade_date in iter_date_strings(start_date, end_date):
         file_path = get_float_share_day_cache_path(trade_date)
+        
+        cache_valid = False
         if file_path.exists():
             try:
                 cached = read_csv_cache(file_path, required_columns, ["ts_code", "trade_date"])
                 if not cached.empty and "pe_ttm" in cached.columns:
-                    if trade_date != end_date or trade_date in _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES:
-                        continue
-                    _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES.add(trade_date)
-                    continue
-            except (ValueError, KeyError):
-                pass  # 旧缓存缺少 pe_ttm 列，重新拉取
+                    cache_valid = True
+            except (ValueError, KeyError, FileNotFoundError, pd.errors.EmptyDataError):
+                pass
+                
+        if cache_valid:
+            continue
+
+        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
+        if trade_date != end_date:
+            continue
+        if trade_date in _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES:
+            continue
+        _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES.add(trade_date)
         df = api_call_with_retry(
             pro.daily_basic,
             pro_api_instance=pro,
@@ -930,53 +978,77 @@ def run_signal_backtest(
     result_df: pd.DataFrame,
     buy_col: str = "exec_buy_signal",
     sell_col: str = "exec_sell_signal",
+    trade_mode: int = 1,
+    use_obv_filter: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     trades: list[dict] = []
     in_position = False
-    pending_buy_signal_date: Optional[str] = None
-    pending_sell_signal_date: Optional[str] = None
+    
     buy_signal_date: Optional[str] = None
     buy_trade_date: Optional[str] = None
     buy_price: Optional[float] = None
-
-    for idx in range(len(result_df) - 1):
+    
+    for idx in range(1, len(result_df)):
         row = result_df.iloc[idx]
-        next_row = result_df.iloc[idx + 1]
+        prev_row = result_df.iloc[idx - 1]
+        
+        if not in_position:
+            trigger_buy = False
+            buy_sig_date = None
+            
+            if trade_mode == 1:
+                if prev_row[buy_col] == 1:
+                    trigger_buy = True
+                    buy_sig_date = str(prev_row["trade_date"])
+            elif trade_mode == 2 and idx >= 2:
+                pp_row = result_df.iloc[idx - 2]
+                if pp_row[buy_col] == 1 and prev_row[buy_col] == 0:
+                    trigger_buy = True
+                    buy_sig_date = str(pp_row["trade_date"])
+            
+            if trigger_buy:
+                # OBV 过滤：启用时只有 OBV 向上（obv_status > 0）才允许买入
+                if use_obv_filter:
+                    if "obv_status" not in prev_row.index or float(prev_row["obv_status"]) <= 0:
+                        trigger_buy = False
 
-        if pending_buy_signal_date is not None and not in_position:
-            buy_signal_date = pending_buy_signal_date
-            buy_trade_date = str(next_row["trade_date"])
-            buy_price = float(next_row["stock_open"])
-            in_position = True
-            pending_buy_signal_date = None
-            continue
-
-        if pending_sell_signal_date is not None and in_position and buy_price is not None:
-            sell_trade_date = str(next_row["trade_date"])
-            sell_price = float(next_row["stock_open"])
-            trade_return = sell_price / buy_price - 1
-            trades.append(
-                {
+            if trigger_buy:
+                in_position = True
+                buy_signal_date = buy_sig_date
+                buy_trade_date = str(row["trade_date"])
+                buy_price = float(row["stock_open"])
+                
+        elif in_position and buy_price is not None:
+            trigger_sell = False
+            sell_sig_date = None
+            
+            if trade_mode == 1:
+                if prev_row[sell_col] == 1:
+                    trigger_sell = True
+                    sell_sig_date = str(prev_row["trade_date"])
+            elif trade_mode == 2 and idx >= 2:
+                pp_row = result_df.iloc[idx - 2]
+                if pp_row[sell_col] == 1 and prev_row[sell_col] == 0:
+                    trigger_sell = True
+                    sell_sig_date = str(pp_row["trade_date"])
+                    
+            if trigger_sell:
+                sell_trade_date = str(row["trade_date"])
+                sell_price = float(row["stock_open"])
+                trade_return = sell_price / buy_price - 1
+                trades.append({
                     "buy_signal_date": buy_signal_date,
                     "buy_trade_date": buy_trade_date,
                     "buy_price": buy_price,
-                    "sell_signal_date": pending_sell_signal_date,
+                    "sell_signal_date": sell_sig_date,
                     "sell_trade_date": sell_trade_date,
                     "sell_price": sell_price,
                     "trade_return": trade_return,
-                }
-            )
-            in_position = False
-            pending_sell_signal_date = None
-            buy_signal_date = None
-            buy_trade_date = None
-            buy_price = None
-            continue
-
-        if not in_position and row[buy_col] == 1:
-            pending_buy_signal_date = str(row["trade_date"])
-        elif in_position and row[sell_col] == 1:
-            pending_sell_signal_date = str(row["trade_date"])
+                })
+                in_position = False
+                buy_signal_date = None
+                buy_trade_date = None
+                buy_price = None
 
     trade_df = pd.DataFrame(trades)
     if trade_df.empty:
@@ -1188,6 +1260,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", default=None, help="开始日期 YYYYMMDD")
     parser.add_argument("--end-date", default=None, help="结束日期 YYYYMMDD")
     parser.add_argument("--index-code", default=None, help="指数代码，例如 399006.SZ")
+    parser.add_argument("--trade-mode", type=int, choices=[1, 2], default=1, help="回测模式: 1=出信号即按次日开盘价买卖 2=信号消失后的次日开盘价买卖")
+    parser.add_argument("--use-obv-filter", action="store_true", default=False, help="启用 OBV 过滤：只有 OBV 向上时才触发买入")
     parser.add_argument("--output-csv", default=None, help="输出 CSV 路径")
     return parser.parse_args()
 
@@ -1228,8 +1302,8 @@ def main() -> None:
     else:
         print(pt_exec_signal_df.to_string(index=False))
 
-    trade_df, summary = run_signal_backtest(pt_signal_df)
-    print("\n回测交易记录:")
+    trade_df, summary = run_signal_backtest(pt_signal_df, trade_mode=args.trade_mode, use_obv_filter=args.use_obv_filter)
+    print(f"\n回测交易记录 (模式 {args.trade_mode}):")
     if trade_df.empty:
         print("无已完成交易")
     else:

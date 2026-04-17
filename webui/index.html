@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSV 数据查看器</title>
+<style>
+/* ── 基础重置 ──────────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #f0f2f5; color: #333; height: 100vh; display: flex; flex-direction: column;
+}
+
+/* ── 顶栏 ──────────────────────────────────────────────────── */
+.topbar {
+    background: #fff; border-bottom: 1px solid #e8e8e8; padding: 12px 20px;
+    display: flex; align-items: center; gap: 16px; flex-shrink: 0;
+}
+.topbar h1 { font-size: 17px; font-weight: 600; white-space: nowrap; }
+.file-select {
+    padding: 7px 28px 7px 10px; border: 1px solid #d9d9d9; border-radius: 6px;
+    font-size: 13px; min-width: 320px; background: #fff;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23999'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    cursor: pointer;
+}
+.file-select:focus { outline: none; border-color: #40a9ff; box-shadow: 0 0 0 2px rgba(24,144,255,.2); }
+.btn {
+    padding: 7px 14px; border: 1px solid #d9d9d9; border-radius: 6px;
+    background: #fff; font-size: 13px; cursor: pointer; white-space: nowrap;
+    transition: all .15s;
+}
+.btn:hover { border-color: #40a9ff; color: #40a9ff; }
+.btn-primary { background: #1890ff; color: #fff; border-color: #1890ff; }
+.btn-primary:hover { background: #40a9ff; border-color: #40a9ff; color: #fff; }
+.row-info { font-size: 12px; color: #999; margin-left: auto; white-space: nowrap; }
+
+/* ── 工具栏 ─────────────────────────────────────────────────── */
+.toolbar {
+    background: #fff; border-bottom: 1px solid #e8e8e8; padding: 8px 20px;
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+.search-input {
+    padding: 7px 10px; border: 1px solid #d9d9d9; border-radius: 6px;
+    font-size: 13px; width: 260px; transition: all .15s;
+}
+.search-input:focus { outline: none; border-color: #40a9ff; box-shadow: 0 0 0 2px rgba(24,144,255,.2); }
+
+/* ── 表格容器 ───────────────────────────────────────────────── */
+.table-wrap {
+    flex: 1; overflow: auto; background: #fff;
+}
+.empty-state {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: #bbb; font-size: 15px;
+}
+
+/* ── 表格 ───────────────────────────────────────────────────── */
+table { border-collapse: collapse; width: max-content; min-width: 100%; }
+thead { position: sticky; top: 0; z-index: 10; }
+
+th {
+    background: #fafafa; border-bottom: 1px solid #e8e8e8; border-right: 1px solid #f0f0f0;
+    padding: 0; font-weight: 600; font-size: 13px; white-space: nowrap;
+    user-select: none; position: relative;
+}
+.th-inner {
+    display: flex; align-items: center; gap: 4px; padding: 8px 10px;
+    cursor: pointer; min-height: 36px;
+}
+.th-inner:hover { background: #f0f0f0; }
+
+/* 排序标记 */
+.sort-icon { font-size: 11px; color: #bbb; flex-shrink: 0; }
+.sort-icon.active { color: #1890ff; }
+
+/* 筛选按钮 */
+.filter-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 3px; font-size: 11px;
+    cursor: pointer; flex-shrink: 0; color: #bbb; transition: all .1s;
+    border: none; background: transparent;
+}
+.filter-btn:hover { background: #e6e6e6; color: #666; }
+.filter-btn.active { background: #e6f7ff; color: #1890ff; }
+
+td {
+    border-bottom: 1px solid #f0f0f0; border-right: 1px solid #f0f0f0;
+    padding: 6px 10px; font-size: 13px; white-space: nowrap;
+    max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+}
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover td { background: #e6f7ff; }
+tbody tr:nth-child(even) td { background: #fafafa; }
+tbody tr:nth-child(even):hover td { background: #e6f7ff; }
+
+/* ── 筛选下拉框 ─────────────────────────────────────────────── */
+.filter-dropdown {
+    position: fixed; background: #fff; border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.15); z-index: 1000;
+    min-width: 220px; max-width: 320px; display: none; flex-direction: column;
+    font-size: 13px; border: 1px solid #e8e8e8;
+}
+.filter-dropdown.show { display: flex; }
+.fd-search { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+.fd-search input {
+    width: 100%; padding: 6px 8px; border: 1px solid #d9d9d9; border-radius: 4px;
+    font-size: 12px; outline: none;
+}
+.fd-search input:focus { border-color: #40a9ff; }
+.fd-actions {
+    padding: 6px 10px; border-bottom: 1px solid #f0f0f0;
+    display: flex; gap: 8px;
+}
+.fd-actions button {
+    padding: 2px 8px; border: 1px solid #d9d9d9; border-radius: 3px;
+    background: #fff; cursor: pointer; font-size: 12px;
+}
+.fd-actions button:hover { background: #f5f5f5; }
+.fd-list { overflow-y: auto; max-height: 280px; padding: 4px 0; }
+.fd-item {
+    padding: 4px 10px; display: flex; align-items: center; gap: 6px;
+    cursor: pointer; word-break: break-all;
+}
+.fd-item:hover { background: #f5f5f5; }
+.fd-item.hidden { display: none; }
+.fd-item input { cursor: pointer; flex-shrink: 0; }
+.fd-item label { cursor: pointer; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fd-footer {
+    padding: 8px 10px; border-top: 1px solid #f0f0f0;
+    display: flex; gap: 8px; justify-content: flex-end;
+}
+.fd-footer button {
+    padding: 4px 14px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+.fd-ok { background: #1890ff; color: #fff; border: none; }
+.fd-ok:hover { background: #40a9ff; }
+.fd-clear { background: #fff; border: 1px solid #d9d9d9; }
+.fd-clear:hover { background: #f5f5f5; }
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<div class="topbar">
+    <h1>CSV 数据查看器</h1>
+    <select id="fileSelect" class="file-select"><option value="">-- 请选择 CSV 文件 --</option></select>
+    <button class="btn" id="refreshBtn" title="刷新文件列表">&#8635; 刷新</button>
+    <span class="row-info" id="rowInfo"></span>
+</div>
+
+<!-- 工具栏 -->
+<div class="toolbar">
+    <input type="text" class="search-input" id="globalSearch" placeholder="全局搜索...">
+    <button class="btn" id="clearFiltersBtn">清除所有筛选</button>
+</div>
+
+<!-- 表格区域 -->
+<div class="table-wrap" id="tableWrap">
+    <div class="empty-state" id="emptyState">请选择一个 CSV 文件</div>
+</div>
+
+<!-- 列筛选下拉框（全局复用） -->
+<div class="filter-dropdown" id="filterDropdown">
+    <div class="fd-search"><input type="text" id="fdSearch" placeholder="搜索值..."></div>
+    <div class="fd-actions">
+        <button id="fdSelectAll">全选</button>
+        <button id="fdDeselectAll">取消全选</button>
+    </div>
+    <div class="fd-list" id="fdList"></div>
+    <div class="fd-footer">
+        <button class="fd-clear" id="fdClearBtn">清除</button>
+        <button class="fd-ok" id="fdOkBtn">确定</button>
+    </div>
+</div>
+
+<script>
+/* ================================================================
+   状态管理
+   ================================================================ */
+const S = {
+    headers: [],          // 列名数组
+    allRows: [],          // 原始行 [[val, ...], ...]
+    colFilters: {},       // { colIdx: Set(允许的值) }  不存在 key 表示不过滤
+    sortCol: -1,          // 当前排序列 (-1 = 无)
+    sortAsc: true,
+    searchText: '',
+    // 筛选下拉框状态
+    fdCol: -1,            // 当前正在筛选的列
+    fdValues: [],         // 该列所有唯一值
+    fdChecked: new Set(), // 用户勾选的值
+};
+
+/* ================================================================
+   文件加载
+   ================================================================ */
+async function loadFileList() {
+    const resp = await fetch('/api/files');
+    const files = await resp.json();
+    const sel = document.getElementById('fileSelect');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">-- 请选择 CSV 文件 --</option>';
+    files.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f; opt.textContent = f;
+        sel.appendChild(opt);
+    });
+    if (prev && files.includes(prev)) sel.value = prev;
+}
+
+async function loadFile(name) {
+    if (!name) { resetState(); renderEmpty('请选择一个 CSV 文件'); return; }
+    renderEmpty('加载中...');
+    try {
+        const resp = await fetch('/api/file?name=' + encodeURIComponent(name));
+        const data = await resp.json();
+        if (data.error) { renderEmpty('错误: ' + data.error); return; }
+        S.headers = data.headers || [];
+        S.allRows = data.rows || [];
+        resetFilters();
+        renderTable();
+    } catch (e) {
+        renderEmpty('加载失败: ' + e.message);
+    }
+}
+
+function resetState() {
+    S.headers = []; S.allRows = []; resetFilters();
+}
+function resetFilters() {
+    S.colFilters = {}; S.sortCol = -1; S.sortAsc = true; S.searchText = '';
+    document.getElementById('globalSearch').value = '';
+}
+
+/* ================================================================
+   数据过滤 & 排序
+   ================================================================ */
+function getFilteredRows() {
+    let rows = S.allRows;
+
+    // 全局搜索
+    if (S.searchText) {
+        const q = S.searchText.toLowerCase();
+        rows = rows.filter(r => r.some(c => String(c).toLowerCase().includes(q)));
+    }
+    // 列筛选
+    for (const ci of Object.keys(S.colFilters)) {
+        const allowed = S.colFilters[ci];
+        if (allowed) rows = rows.filter(r => allowed.has(String(r[ci])));
+    }
+    // 排序
+    if (S.sortCol >= 0) {
+        const c = S.sortCol;
+        rows = [...rows].sort((a, b) => {
+            const va = a[c] ?? '', vb = b[c] ?? '';
+            const na = Number(va), nb = Number(vb);
+            let cmp;
+            if (va !== '' && vb !== '' && !isNaN(na) && !isNaN(nb)) cmp = na - nb;
+            else cmp = String(va).localeCompare(String(vb), 'zh-CN');
+            return S.sortAsc ? cmp : -cmp;
+        });
+    }
+    return rows;
+}
+
+/* 判断某列是否为数值列（>80% 非空值为数字） */
+function isNumCol(ci) {
+    let nums = 0, total = 0;
+    for (const r of S.allRows) {
+        const v = r[ci];
+        if (v === '' || v == null) continue;
+        total++;
+        if (!isNaN(Number(v))) nums++;
+    }
+    return total > 0 && nums / total > 0.8;
+}
+
+/* ================================================================
+   渲染
+   ================================================================ */
+function renderEmpty(msg) {
+    document.getElementById('tableWrap').innerHTML =
+        '<div class="empty-state">' + msg + '</div>';
+    document.getElementById('rowInfo').textContent = '';
+}
+
+function renderTable() {
+    const rows = getFilteredRows();
+    const numCols = S.headers.map((_, i) => isNumCol(i));
+    const wrap = document.getElementById('tableWrap');
+
+    // 构建表头
+    let thHtml = '';
+    S.headers.forEach((h, i) => {
+        const hasFilter = S.colFilters[i] != null;
+        const sortClass = S.sortCol === i ? (S.sortAsc ? 'active' : 'active') : '';
+        const sortChar = S.sortCol === i ? (S.sortAsc ? '&#9650;' : '&#9660;') : '&#9650;';
+        thHtml += `<th>
+            <div class="th-inner" onclick="handleSort(${i})">
+                <span>${escHtml(h)}</span>
+                <span class="sort-icon ${sortClass}">${sortChar}</span>
+            </div>
+            <button class="filter-btn ${hasFilter ? 'active' : ''}"
+                    onclick="event.stopPropagation();openFilter(${i},this)">&#9662;</button>
+        </th>`;
+    });
+
+    // 构建行
+    let tbHtml = '';
+    const maxRows = Math.min(rows.length, 5000);
+    for (let ri = 0; ri < maxRows; ri++) {
+        const r = rows[ri];
+        tbHtml += '<tr>';
+        for (let ci = 0; ci < S.headers.length; ci++) {
+            const v = r[ci] ?? '';
+            const cls = numCols[ci] ? ' class="num"' : '';
+            tbHtml += `<td${cls}>${escHtml(String(v))}</td>`;
+        }
+        tbHtml += '</tr>';
+    }
+    if (rows.length > maxRows) {
+        tbHtml += `<tr><td colspan="${S.headers.length}" style="text-align:center;color:#999;padding:10px;">
+            仅显示前 ${maxRows} 行（共 ${rows.length} 行）</td></tr>`;
+    }
+
+    wrap.innerHTML = `<table><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table>`;
+
+    // 行信息
+    const parts = [`共 ${S.allRows.length} 行`];
+    if (rows.length !== S.allRows.length) parts.push(`筛选后 ${rows.length} 行`);
+    parts.push(`${S.headers.length} 列`);
+    document.getElementById('rowInfo').textContent = parts.join('  |  ');
+}
+
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+/* ================================================================
+   排序
+   ================================================================ */
+function handleSort(ci) {
+    if (S.sortCol === ci) {
+        if (S.sortAsc) { S.sortAsc = false; }
+        else { S.sortCol = -1; S.sortAsc = true; }
+    } else {
+        S.sortCol = ci; S.sortAsc = true;
+    }
+    renderTable();
+}
+
+/* ================================================================
+   列筛选（Excel AutoFilter 风格）
+   ================================================================ */
+const fdEl = document.getElementById('filterDropdown');
+const fdSearchEl = document.getElementById('fdSearch');
+const fdListEl = document.getElementById('fdList');
+
+function openFilter(ci, btnEl) {
+    S.fdCol = ci;
+    // 收集唯一值（从全量数据）
+    const valSet = new Set();
+    S.allRows.forEach(r => valSet.add(String(r[ci] ?? '')));
+    S.fdValues = [...valSet].sort((a, b) => {
+        const na = Number(a), nb = Number(b);
+        if (a !== '' && b !== '' && !isNaN(na) && !isNaN(nb)) return na - nb;
+        return a.localeCompare(b, 'zh-CN');
+    });
+
+    // 当前筛选状态
+    const current = S.colFilters[ci];
+    S.fdChecked = current ? new Set(current) : new Set(S.fdValues);
+
+    // 渲染列表
+    renderFilterList('');
+    fdSearchEl.value = '';
+
+    // 定位
+    const rect = btnEl.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 4;
+    fdEl.classList.add('show');
+    // 等一帧获取尺寸后修正位置
+    requestAnimationFrame(() => {
+        const dr = fdEl.getBoundingClientRect();
+        if (left + dr.width > window.innerWidth - 8) left = window.innerWidth - dr.width - 8;
+        if (top + dr.height > window.innerHeight - 8) top = rect.top - dr.height - 4;
+        fdEl.style.left = Math.max(4, left) + 'px';
+        fdEl.style.top = Math.max(4, top) + 'px';
+    });
+    fdEl.style.left = left + 'px';
+    fdEl.style.top = top + 'px';
+}
+
+function renderFilterList(query) {
+    const q = query.toLowerCase();
+    let html = '';
+    S.fdValues.forEach(v => {
+        const hidden = q && !v.toLowerCase().includes(q) ? ' hidden' : '';
+        const checked = S.fdChecked.has(v) ? ' checked' : '';
+        const id = 'fd_' + hashCode(v);
+        html += `<div class="fd-item${hidden}" data-val="${escAttr(v)}">
+            <input type="checkbox" id="${id}" ${checked}>
+            <label for="${id}">${escHtml(v || '(空)')}</label>
+        </div>`;
+    });
+    fdListEl.innerHTML = html;
+}
+
+function closeFilter() {
+    fdEl.classList.remove('show');
+    S.fdCol = -1;
+}
+
+function applyFilter() {
+    const ci = S.fdCol;
+    if (S.fdChecked.size === S.fdValues.length) {
+        delete S.colFilters[ci]; // 全选 = 无筛选
+    } else {
+        S.colFilters[ci] = new Set(S.fdChecked);
+    }
+    closeFilter();
+    renderTable();
+}
+
+function clearFilter() {
+    delete S.colFilters[S.fdCol];
+    closeFilter();
+    renderTable();
+}
+
+/* 简单 hash，避免 id 冲突 */
+let _hc = 0;
+function hashCode(s) { return 'h' + (_hc++); }
+function escAttr(s) { return s.replace(/"/g, '&quot;').replace(/\\/g, '\\\\'); }
+
+/* ── 筛选下拉框事件绑定 ────────────────────────────────────── */
+fdSearchEl.addEventListener('input', () => renderFilterList(fdSearchEl.value));
+
+fdListEl.addEventListener('change', e => {
+    if (e.target.tagName !== 'INPUT') return;
+    const item = e.target.closest('.fd-item');
+    const val = item.dataset.val;
+    if (e.target.checked) S.fdChecked.add(val);
+    else S.fdChecked.delete(val);
+});
+
+// 点击整行也切换 checkbox
+fdListEl.addEventListener('click', e => {
+    const item = e.target.closest('.fd-item');
+    if (!item || e.target.tagName === 'INPUT') return;
+    const cb = item.querySelector('input');
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change'));
+});
+
+document.getElementById('fdSelectAll').onclick = () => {
+    S.fdChecked = new Set(S.fdValues);
+    renderFilterList(fdSearchEl.value);
+};
+document.getElementById('fdDeselectAll').onclick = () => {
+    S.fdChecked = new Set();
+    renderFilterList(fdSearchEl.value);
+};
+document.getElementById('fdOkBtn').onclick = applyFilter;
+document.getElementById('fdClearBtn').onclick = clearFilter;
+
+// 点击外部关闭
+document.addEventListener('mousedown', e => {
+    if (fdEl.classList.contains('show') && !fdEl.contains(e.target)) closeFilter();
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && fdEl.classList.contains('show')) closeFilter();
+});
+
+/* ================================================================
+   工具栏事件
+   ================================================================ */
+document.getElementById('globalSearch').addEventListener('input', e => {
+    S.searchText = e.target.value;
+    renderTable();
+});
+
+document.getElementById('clearFiltersBtn').onclick = () => {
+    resetFilters(); renderTable();
+};
+
+document.getElementById('fileSelect').onchange = e => loadFile(e.target.value);
+document.getElementById('refreshBtn').onclick = () => loadFileList();
+
+/* ================================================================
+   初始化
+   ================================================================ */
+loadFileList();
+</script>
+</body>
+</html>

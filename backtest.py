@@ -540,6 +540,7 @@ def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
             pro_api_instance=pro,
             trade_date=trade_date,
             timeout=120,
+            fields=["ts_code", "trade_date", "adj_factor"],
         )
         if df is not None and not df.empty:
             write_csv_cache(file_path, df, required_columns=required_columns, dedupe_subset=["ts_code", "trade_date"])

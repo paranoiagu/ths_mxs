@@ -24,6 +24,10 @@ python backtest.py --code 300760 --start-date 20220101 --end-date 20240101
 # Screen for buy/sell signals across the market
 python stock_screener.py --market 创业板 --scan-type buy
 python stock_screener.py --codes 300760,000001,600519 --scan-type both
+
+# Run paper trading simulation on main board stocks
+python paper_trading.py
+python paper_trading.py --start-date 20250101 --end-date 20260401
 ```
 
 ## Environment Setup
@@ -45,6 +49,7 @@ Requires a Tushare Pro API token. Copy `.env.example` to `.env` and set `TUSHARE
 - **`backtest.py`** — Core engine: all indicator calculations, data fetching/caching, backtesting loop, signal generation. This is the largest and most important file
 - **`mxs_indicator.py`** — CLI wrapper for indicator calculation and CSV export on individual stocks
 - **`stock_screener.py`** — CLI for market-wide signal scanning across boards (主板/创业板/科创板/北交所)
+- **`paper_trading.py`** — Paper trading simulation engine: multi-stock portfolio with mode=2 signals, OBV filtering, fund allocation, and CSV output
 
 ### Indicator Calculations
 
@@ -60,6 +65,8 @@ Market data is cached as CSV files under `data/cache/` keyed by date and securit
 ### Signal Output Files
 
 Scan results are saved under `data/recent_buy_without_sell_*.csv` and `data/ths_indicator_*.csv`.
+
+Paper trading output files are saved under `data/paper_trading_trades_*.csv`, `data/paper_trading_positions_*.csv`, and `data/paper_trading_summary_*.csv`.
 
 ## Reference Files
 

@@ -38,7 +38,7 @@ Requires a Tushare Pro API token. Copy `.env.example` to `.env` and set `TUSHARE
 
 ### Data Flow
 
-1. **Data Acquisition** (`util.py` + `backtest.py`): Fetches daily OHLCV, index, and float-share data via Tushare API with local file caching under `data/cache/`
+1. **Data Acquisition** (`util.py` + `backtest.py`): Fetches daily OHLCV, index, and float-share data via Tushare API with local file caching under `cache/`
 2. **Indicator Calculation** (`backtest.py`): Translates TongHuaShun formula functions (MA, EMA, LLV, HHV, SMA_TDX, AVEDEV, zig_zag) into pandas/numpy vectorized operations
 3. **Signal Generation** (`backtest.py`): Produces buy/sell signals from crossover detection and pattern matching
 4. **Output**: Backtest trade records & stats, screening CSVs, individual stock indicator exports
@@ -60,13 +60,13 @@ The TongHuaShun formula functions are reimplemented in `backtest.py`. Key signal
 
 ### Data Caching
 
-Market data is cached as CSV files under `data/cache/` keyed by date and security code to minimize Tushare API calls. Cached data is reused across backtests and screening runs.
+Market data is cached as CSV files under `cache/` keyed by date and security code to minimize Tushare API calls. Cached data is reused across backtests and screening runs.
 
 ### Signal Output Files
 
-Scan results are saved under `data/recent_buy_without_sell_*.csv` and `data/ths_indicator_*.csv`.
+Scan results are saved under `result/recent_buy_without_sell_*.csv` and `result/ths_indicator_*.csv`.
 
-Paper trading output files are saved under `data/paper_trading_trades_*.csv`, `data/paper_trading_positions_*.csv`, and `data/paper_trading_summary_*.csv`.
+Paper trading output files are saved under `result/paper_trading_trades_*.csv`, `result/paper_trading_positions_*.csv`, and `result/paper_trading_summary_*.csv`.
 
 ## Reference Files
 

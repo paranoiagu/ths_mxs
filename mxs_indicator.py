@@ -25,7 +25,7 @@ load_dotenv()
 def build_review_output_path(ts_code: str, output_csv: str | None) -> Path:
     if output_csv:
         return Path(output_csv).resolve()
-    return (Path(__file__).resolve().parent / "data" / f"ths_formula_review_{ts_code}.csv").resolve()
+    return (Path(__file__).resolve().parent / "result" / f"ths_formula_review_{ts_code}.csv").resolve()
 
 
 

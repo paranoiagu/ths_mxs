@@ -73,7 +73,7 @@ def build_output_path(end_date: str, output_csv: str | None, scan_type: str, mar
         filename = f"recent_sell_without_buy{market_suffix}_{end_date}.csv"
     else:
         filename = f"recent_buy_without_sell{market_suffix}_{end_date}.csv"
-    return (Path(__file__).resolve().parent / "data" / filename).resolve()
+    return (Path(__file__).resolve().parent / "result" / filename).resolve()
 
 
 def print_and_save_result(result_df: pd.DataFrame, output_path: Path, empty_message: str) -> None:

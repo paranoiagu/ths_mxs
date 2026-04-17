@@ -383,7 +383,7 @@ def resolve_security(pro, code: str) -> dict:
 
 
 def get_cache_dir(*parts: str) -> Path:
-    return Path(__file__).resolve().parent.joinpath("data", "cache", *parts)
+    return Path(__file__).resolve().parent.joinpath("cache", *parts)
 
 
 def get_stock_day_cache_path(trade_date: str) -> Path:
@@ -843,7 +843,7 @@ def fetch_float_share(pro, ts_code: str, start_date: str, end_date: str, securit
 def build_output_path(ts_code: str, output_csv: Optional[str]) -> Path:
     if output_csv:
         return Path(output_csv).resolve()
-    return (Path(__file__).resolve().parent / "data" / f"ths_indicator_{ts_code}.csv").resolve()
+    return (Path(__file__).resolve().parent / "result" / f"ths_indicator_{ts_code}.csv").resolve()
 
 
 def calculate_mxs_indicators(stock_df: pd.DataFrame, index_df: pd.DataFrame, float_df: pd.DataFrame, security_type: str) -> pd.DataFrame:

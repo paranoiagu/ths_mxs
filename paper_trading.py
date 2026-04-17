@@ -449,7 +449,7 @@ class PaperTrader:
 
     def save_to_csv(self, end_date: str) -> None:
         """保存交易流水、持仓快照、绩效汇总到 CSV"""
-        output_dir = Path(__file__).resolve().parent / "data"
+        output_dir = Path(__file__).resolve().parent / "result"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # 1) 交易流水

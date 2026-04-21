@@ -481,13 +481,10 @@ def ensure_stock_day_cache(pro, start_date: str, end_date: str) -> None:
         if cache_valid:
             continue
 
-        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
-        if trade_date != end_date:
-            continue
         if trade_date in _ATTEMPTED_EMPTY_STOCK_DATES:
             continue
         _ATTEMPTED_EMPTY_STOCK_DATES.add(trade_date)
-            
+
         df = api_call_with_retry(
             pro.daily,
             pro_api_instance=pro,
@@ -528,13 +525,10 @@ def ensure_adj_factor_day_cache(pro, start_date: str, end_date: str) -> None:
         if cache_valid:
             continue
 
-        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
-        if trade_date != end_date:
-            continue
         if trade_date in _ATTEMPTED_EMPTY_ADJ_DATES:
             continue
         _ATTEMPTED_EMPTY_ADJ_DATES.add(trade_date)
-            
+
         df = api_call_with_retry(
             pro.adj_factor,
             pro_api_instance=pro,
@@ -574,9 +568,6 @@ def ensure_float_share_day_cache(pro, start_date: str, end_date: str) -> None:
         if cache_valid:
             continue
 
-        # 历史日期缓存无效直接跳过，只有 end_date 才触发刷新
-        if trade_date != end_date:
-            continue
         if trade_date in _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES:
             continue
         _ATTEMPTED_EMPTY_FLOAT_SHARE_DATES.add(trade_date)
